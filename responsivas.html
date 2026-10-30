@@ -1,0 +1,398 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sistema GESTOR DE INVENTARIO &amp; ETIQUETADO QR GPS</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<style>
+:root{--u:.01in;--f:"Segoe UI",Roboto,Arial,sans-serif;--header:#1e293b;--fondo:#f1f5f9;--thead:#0f172a;--impar:#f8fafc;--sel:#e0e7ff;--grid:#e2e8f0}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{font:9.5pt var(--f);background:var(--fondo);display:flex;flex-direction:column}
+#pnlHeader{height:65px;flex:none;background:var(--header);padding:0 20px;display:flex;align-items:center;justify-content:space-between;gap:20px}
+#lblTituloApp{color:#fff;font-size:13pt;font-weight:700}
+#pnlBuscador{width:360px;max-width:50%;height:38px;flex:none;background:#fff;border-radius:8px;position:relative}
+#txtBuscar{position:absolute;left:12px;top:0;width:calc(100% - 24px);height:38px;border:0;outline:0;font:10.5pt var(--f);background:#fff}
+#lblPlaceholderBuscar{position:absolute;left:12px;top:9px;color:gray;font-size:9.5pt;font-style:italic;pointer-events:none;white-space:nowrap;overflow:hidden;max-width:calc(100% - 24px)}
+#pnlBotones{height:55px;flex:none;padding:10px 15px 5px;display:flex;gap:10px}
+.btn{width:180px;height:36px;border:0;color:#fff;font:700 9pt var(--f);cursor:pointer}
+.btn:hover{filter:brightness(1.15)}
+#grid{flex:1;overflow:auto}
+table{width:100%;border-collapse:collapse;table-layout:fixed;min-width:1100px}
+th{position:sticky;top:0;height:40px;background:var(--thead);color:#fff;font:700 9.5pt var(--f);text-align:left;padding-left:10px;cursor:pointer;user-select:none;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+td{height:35px;padding:0 0 0 8px;font-size:9pt;color:#1e293b;background:#fff;border-bottom:1px solid var(--grid);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+tr:nth-child(even) td{background:var(--impar)}
+td.id{background:#f1f5f9!important;font-weight:700}
+td.sel{background:var(--sel)!important;color:#0f172a}
+td input[type=text]{width:100%;height:100%;border:2px solid #6366f1;font:inherit;padding:0 4px;outline:0}
+#pnlStatusBar{height:30px;flex:none;background:var(--header);color:#cbd5e1;font-size:8.5pt;padding:0 15px;display:flex;align-items:center}
+/* ---- Etiquetas (unidades originales de 1/100 pulgada) ---- */
+#printArea{display:none}
+.sticker{position:relative;width:calc(var(--u)*250);height:calc(var(--u)*135);background:#fff;box-shadow:inset 0 0 0 calc(var(--u)*1.5) #141e2d;overflow:hidden;break-inside:avoid;font-family:var(--f)}
+.sticker .a{position:absolute;white-space:nowrap;line-height:1.25}
+.sticker .w{white-space:normal;overflow:hidden}
+@page{size:letter;margin:1in}
+@media print{
+ body>:not(#printArea){display:none!important}
+ body{display:block;background:#fff;height:auto}
+ #printArea{display:grid;grid-template-columns:repeat(2,calc(var(--u)*250));gap:calc(var(--u)*15);-webkit-print-color-adjust:exact;print-color-adjust:exact}
+}
+</style>
+</head>
+<body>
+<div id="pnlHeader">
+ <div id="lblTituloApp">INVENTARIO CON ETIQUETADO QR GEOLOCALIZABLE</div>
+ <div id="pnlBuscador">
+  <div id="lblPlaceholderBuscar">🔍 Buscar por nombre, puesto, depto, serie, equipo...</div>
+  <input id="txtBuscar" type="text" autocomplete="off">
+ </div>
+</div>
+<div id="pnlBotones">
+ <button class="btn" id="btnCargarExcel" style="background:#10b981">📁 Cargar Excel / CSV</button>
+ <button class="btn" id="btnImprimirEtiqueta" style="background:#f59e0b">🏷️ Imprimir QR en Hoja</button>
+ <button class="btn" id="btnLimpiarHistorico" style="background:#e11d48">🗑️ Limpiar Histórico</button>
+ <input id="ofd" type="file" accept=".xlsx,.xls,.csv" hidden>
+</div>
+<div id="grid"><table id="dgvDatos"></table></div>
+<div id="pnlStatusBar"><span id="lblInfo">Registros visibles: 0</span></div>
+<div id="printArea"></div>
+
+<script>
+"use strict";
+/* Traslado 1:1 de Form1 (VB). Se conservan nombres de funciones, reglas y mensajes.
+   Cambios obligados por la plataforma: datos_inventario.xml -> localStorage, MessageBox -> alert/confirm,
+   PrintDocument -> window.print(), DataTable/DataView -> arreglo de objetos. */
+const urlBaseGeolocalizacion = "https://danielnafate-dotcom.github.io/rensponsivas/?id=";
+const rutaArchivoLocal = "datos_inventario";
+const COLUMNAS = ["Fecha Carga","Numero Consecutivo","Nombre","Puesto","Departamento","Sucursal","Objeto","Marca/Modelo","No. Serie","Descripcion","Estado"];
+const COLS_FILTRO = ["Nombre","Puesto","Departamento","Sucursal","Objeto","Descripcion","No. Serie","Numero Consecutivo"];
+let dtInventario = [];
+let filasParaImprimir = [];
+let indiceImpresionActual = 0;
+const contadoresDepartamento = new Map(); // OrdinalIgnoreCase
+let filtroActual = "", sortCol = null, sortAsc = true;
+const $ = id => document.getElementById(id);
+const EscapeDataString = s => encodeURIComponent(s).replace(/[!'()*]/g, c => "%" + c.charCodeAt(0).toString(16).toUpperCase());
+const cK = k => k.toUpperCase();
+
+/* ---------- Carga / guardado ---------- */
+function CrearEstructuraTabla(){ return []; }
+function GuardarDatosLocales(){
+  try { if (dtInventario) localStorage.setItem(rutaArchivoLocal, JSON.stringify(dtInventario)); }
+  catch (ex) { alert("Error al guardar registros localmente: " + ex.message); }
+}
+function CargarDatosLocales(){
+  let dt = CrearEstructuraTabla();
+  try {
+    const txt = localStorage.getItem(rutaArchivoLocal);
+    if (txt) dt = JSON.parse(txt).map(r => { const o = {}; COLUMNAS.forEach(c => o[c] = r[c] == null ? "" : String(r[c])); return o; });
+  } catch (ex) { dt = CrearEstructuraTabla(); }
+  return dt;
+}
+
+/* ---------- IDs por departamento ---------- */
+function ObtenerPrefijoDepartamento(departamento){
+  if (!departamento || !departamento.trim()) return "GEN";
+  const d = departamento.trim().toUpperCase().replace(/Á/g,"A").replace(/É/g,"E").replace(/Í/g,"I").replace(/Ó/g,"O").replace(/Ú/g,"U");
+  const has = (...k) => k.some(x => d.includes(x));
+  if (has("REFACCION")) return "VEN-REF";
+  else if (has("MOTOCICLETA","MOTO")) return "VEN-MOT";
+  else if (has("PROSPECCION")) return "VEN-PR";
+  else if (has("MARKETING")) return "MKT";
+  else if (has("ALMACEN CDMX","ALM CDMX")) return "ALM-CDM";
+  else if (has("ALMACEN TERAN","ALM TERAN")) return "ALM-TER";
+  else if (has("ALMACEN","ALM")) return "ALM";
+  else if (has("ATENCION","CLIENTE")) return "ATE";
+  else if (has("DIRECCION","DIR GENERAL")) return "DIRG";
+  else if (has("COMERCIAL")) return "COM";
+  else if (has("ADMINISTRA","ADMON")) return "ADMO";
+  else if (has("TRANSPORTE","CHOFER")) return "TRA";
+  else if (has("SUPERVISI")) return "SUP";
+  else if (has("SISTEMA","IT","TECNOLOGIA")) return "SIS";
+  const conectores = ["DE","DEL","A","LA","EL","LOS","LAS","Y","EN","PARA","POR"];
+  const palabras = (d.match(/[A-Z0-9]+/g) || []).filter(p => !conectores.includes(p));
+  if (palabras.length >= 2) {
+    const p1 = palabras[0].length >= 3 ? palabras[0].substring(0,3) : palabras[0];
+    const p2 = palabras[1].length >= 3 ? palabras[1].substring(0,3) : palabras[1];
+    return p1 + "-" + p2;
+  } else if (palabras.length === 1) return palabras[0].length >= 4 ? palabras[0].substring(0,4) : palabras[0];
+  return "GEN";
+}
+function GenerarIDPorDepartamento(departamento){
+  const prefijo = ObtenerPrefijoDepartamento(departamento), k = cK(prefijo);
+  contadoresDepartamento.set(k, (contadoresDepartamento.get(k) || 0) + 1);
+  return prefijo + "-" + String(contadoresDepartamento.get(k)).padStart(3, "0");
+}
+function TryParseInt(s){ if (!/^\s*[+-]?\d+\s*$/.test(s)) return null; const n = parseInt(s,10); return (n >= -2147483648 && n <= 2147483647) ? n : null; }
+function ReconstruirContadores(){
+  contadoresDepartamento.clear();
+  if (dtInventario) for (const row of dtInventario) {
+    if (row["Numero Consecutivo"] != null) {
+      const partes = String(row["Numero Consecutivo"]).split("-");
+      if (partes.length >= 2) {
+        const numVal = TryParseInt(partes[partes.length - 1]);
+        if (numVal !== null) {
+          const k = cK(partes.slice(0, -1).join("-"));
+          if (!contadoresDepartamento.has(k) || contadoresDepartamento.get(k) < numVal) contadoresDepartamento.set(k, numVal);
+        }
+      }
+    }
+  }
+}
+
+/* ---------- Grilla ---------- */
+function vistaActual(){
+  let v = dtInventario;
+  const f = filtroActual;
+  if (f) {
+    const re = new RegExp(f.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/[*%]/g, ".*"), "i");
+    v = v.filter(r => COLS_FILTRO.some(c => re.test(r[c])));
+  }
+  if (sortCol) { v = v.slice().sort((a, b) => a[sortCol].localeCompare(b[sortCol], "es") * (sortAsc ? 1 : -1)); }
+  return v;
+}
+function enlazarGrilla(){ // dgvDatos.DataSource = dtInventario.DefaultView + ConfigurarColumnasGrilla
+  const t = $("dgvDatos"), v = vistaActual();
+  t.textContent = "";
+  const cg = t.appendChild(document.createElement("colgroup"));
+  cg.appendChild(document.createElement("col")).style.width = "70px";
+  COLUMNAS.forEach(() => cg.appendChild(document.createElement("col")));
+  const trh = t.appendChild(document.createElement("thead")).appendChild(document.createElement("tr"));
+  const th0 = trh.appendChild(document.createElement("th")); th0.textContent = "Imprimir"; th0.style.cursor = "default";
+  COLUMNAS.forEach(c => {
+    const th = trh.appendChild(document.createElement("th"));
+    th.textContent = (c === "Numero Consecutivo" ? "ID (Inmodificable)" : c) + (sortCol === c ? (sortAsc ? " ▲" : " ▼") : "");
+    th.onclick = () => { if (sortCol === c) sortAsc = !sortAsc; else { sortCol = c; sortAsc = true; } enlazarGrilla(); };
+  });
+  const tb = t.appendChild(document.createElement("tbody"));
+  v.forEach(row => {
+    const tr = tb.appendChild(document.createElement("tr")); tr._row = row;
+    const tdc = tr.appendChild(document.createElement("td"));
+    const chk = tdc.appendChild(document.createElement("input")); chk.type = "checkbox";
+    COLUMNAS.forEach(c => {
+      const td = tr.appendChild(document.createElement("td")); td.textContent = row[c]; td.title = row[c];
+      if (c === "Numero Consecutivo") td.className = "id";
+      td.onclick = e => { if (!e.ctrlKey) t.querySelectorAll("td.sel").forEach(x => x.classList.remove("sel")); td.classList.toggle("sel"); };
+      td.ondblclick = () => dgvDatos_CellBeginEdit(td, row, c);
+    });
+  });
+}
+function dgvDatos_CellBeginEdit(td, row, col){
+  if (col === "Numero Consecutivo") return; // e.Cancel = True
+  const inp = document.createElement("input"); inp.type = "text"; inp.value = row[col];
+  td.textContent = ""; td.appendChild(inp); inp.focus(); inp.select();
+  let hecho = false;
+  const fin = ok => { if (hecho) return; hecho = true; if (ok) row[col] = inp.value; td.textContent = row[col]; td.title = row[col]; dgvDatos_CellEndEdit(); };
+  inp.onblur = () => fin(true);
+  inp.onkeydown = e => { if (e.key === "Enter") fin(true); else if (e.key === "Escape") fin(false); };
+}
+function dgvDatos_CellEndEdit(){ GuardarDatosLocales(); }
+function ActualizarContador(){
+  if (dtInventario) $("lblInfo").textContent = "Registros visibles: " + vistaActual().length + " | Total en base de datos: " + dtInventario.length;
+}
+
+/* ---------- Búsqueda ---------- */
+$("txtBuscar").addEventListener("input", () => { // txtBuscar_TextChanged
+  const tb = $("txtBuscar");
+  $("lblPlaceholderBuscar").style.display = tb.value ? "none" : "";
+  if (!dtInventario) return;
+  filtroActual = tb.value.trim();
+  try { enlazarGrilla(); ActualizarContador(); } catch (ex) { filtroActual = ""; }
+});
+
+/* ---------- Limpiar histórico ---------- */
+$("btnLimpiarHistorico").onclick = () => {
+  if (!dtInventario || dtInventario.length === 0) { alert("El histórico ya se encuentra vacío."); return; }
+  if (confirm("¿Estás seguro de que deseas eliminar TODO el histórico de inventario?")) {
+    try {
+      dtInventario.length = 0; contadoresDepartamento.clear();
+      localStorage.removeItem(rutaArchivoLocal);
+      enlazarGrilla(); ActualizarContador();
+      alert("Histórico eliminado con éxito.");
+    } catch (ex) { alert("Error al limpiar histórico: " + ex.message); }
+  }
+};
+
+/* ---------- Importación ---------- */
+const pad = n => String(n).padStart(2, "0");
+$("btnCargarExcel").onclick = () => $("ofd").click();
+$("ofd").onchange = async () => {
+  const f = $("ofd").files[0]; if (!f) return;
+  const d = new Date();
+  const fechaCarga = `${pad(d.getDate())}/${pad(d.getMonth()+1)}/${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+  const ext = ((f.name.match(/\.[^.]*$/) || [""])[0]).toLowerCase();
+  if (ext === ".csv") await ProcesarArchivoCSV(f, fechaCarga);
+  else if (ext === ".xlsx" || ext === ".xls") await ProcesarArchivoExcelXML(f, fechaCarga);
+  GuardarDatosLocales(); ActualizarContador(); $("ofd").value = "";
+};
+async function ProcesarArchivoCSV(archivo, fechaCarga){
+  try {
+    const lineas = new TextDecoder("windows-1252").decode(await archivo.arrayBuffer()).split(/\r\n|\n|\r/); // Encoding.Default
+    if (lineas.length && lineas[lineas.length-1] === "") lineas.pop();
+    if (lineas.length <= 1) return;
+    let registrosAgregados = 0;
+    for (let i = 1; i < lineas.length; i++) {
+      const linea = lineas[i].trim(); if (!linea) continue;
+      const campos = linea.split(",");
+      if (campos.length >= 8) {
+        const deptoVal = campos.length > 3 ? campos[3].replace(/"/g, "").trim() : "";
+        const sucursalVal = campos.length > 4 ? campos[4].replace(/"/g, "").trim() : "";
+        const idGenerado = GenerarIDPorDepartamento(deptoVal);
+        AgregarFilaATabla(dtInventario, fechaCarga, idGenerado, campos[1], campos[2], deptoVal, sucursalVal,
+          campos.length > 5 ? campos[5] : "", campos.length > 6 ? campos[6] : "", campos.length > 7 ? campos[7] : "",
+          campos.length > 8 ? campos[8] : "", campos.length > 9 ? campos[9] : "");
+        registrosAgregados++;
+      }
+    }
+    enlazarGrilla();
+    alert("Se importaron " + registrosAgregados + " registros desde CSV.");
+  } catch (ex) { alert("Error CSV: " + ex.message); }
+}
+async function ProcesarArchivoExcelXML(archivo, fechaCarga){
+  const NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
+  const parse = txt => { const d = new DOMParser().parseFromString(txt, "application/xml"); const e = d.getElementsByTagName("parsererror")[0]; if (e) throw new Error(e.textContent); return d; };
+  try {
+    const lineasExcel = [], mapaSharedStrings = [];
+    const zip = await JSZip.loadAsync(await archivo.arrayBuffer());
+    const nombres = Object.keys(zip.files);
+    const nStrings = nombres.find(n => n.toLowerCase() === "xl/sharedstrings.xml");
+    if (nStrings) {
+      const x = parse(await zip.file(nStrings).async("string"));
+      for (const si of x.getElementsByTagNameNS(NS, "si")) {
+        let t = ""; for (const tn of si.getElementsByTagNameNS(NS, "t")) t += tn.textContent;
+        mapaSharedStrings.push(t.trim());
+      }
+    }
+    const nSheet = nombres.find(n => n.toLowerCase().startsWith("xl/worksheets/sheet") && n.endsWith(".xml"));
+    if (!nSheet) { alert("No se encontró ninguna hoja válida dentro del archivo Excel."); return; }
+    const xs = parse(await zip.file(nSheet).async("string"));
+    const sd = xs.getElementsByTagNameNS(NS, "sheetData")[0];
+    const filasNodes = sd ? [...sd.children].filter(n => n.localName === "row") : [];
+    let encabezados = new Map();
+    for (const rowNode of filasNodes) {
+      const celdasFila = new Map();
+      for (const cNode of [...rowNode.children].filter(n => n.localName === "c")) {
+        const refCelda = cNode.getAttribute("r"), tipoCelda = cNode.getAttribute("t") || "";
+        const colLetra = refCelda.replace(/[0-9]/g, "");
+        const valNodo = [...cNode.children].find(n => n.localName === "v");
+        let valorReal = "";
+        if (valNodo) {
+          const valTexto = valNodo.textContent.trim();
+          if (tipoCelda === "s") { const idx = TryParseInt(valTexto); if (idx !== null && idx >= 0 && idx < mapaSharedStrings.length) valorReal = mapaSharedStrings[idx]; }
+          else if (tipoCelda === "inlineStr") { const tn = cNode.getElementsByTagNameNS(NS, "t")[0]; if (tn) valorReal = tn.textContent.trim(); }
+          else valorReal = valTexto;
+        }
+        celdasFila.set(colLetra, valorReal);
+      }
+      if (encabezados.size === 0) {
+        for (const [k, v] of celdasFila) if (v.trim()) encabezados.set(k, v.trim().toUpperCase());
+      } else {
+        const dictFila = new Map();
+        for (const [k, v] of celdasFila) if (encabezados.has(k)) dictFila.set(encabezados.get(k), v);
+        if (dictFila.size > 0) lineasExcel.push(dictFila);
+      }
+    }
+    if (lineasExcel.length === 0) { alert("El archivo Excel no contiene registros legibles."); return; }
+    let registrosAgregados = 0;
+    for (const fila of lineasExcel) {
+      const g = kws => ObtenerValorColumnaEspecial(fila, kws);
+      const valNombre = g(["NOMBRE","EMPLEADO","RESPONSABLE","USUARIO"]);
+      const valPuesto = g(["PUESTO","CARGO"]);
+      const valDepto = g(["DEPARTAMENTO","DEPTO","AREA","ÁREA"]);
+      const valSucursal = g(["SUCURSAL","UBICACION","UBICACIÓN","SITIO"]);
+      const valObjeto = g(["OBJETO"]);
+      const valMarca = g(["MODELO O MARCA","MODELO","MARCA"]);
+      const valSerie = g(["N.° DE SERIE","N° DE SERIE","SERIE","S/N"]);
+      const valDesc = g(["DESCRIPCION","DESCRIPCIÓN","DETALLE","PRODUCTO"]);
+      const valEstado = g(["ESTADO AL MOMENTO DE ENTREGA","ESTADO","ESTATUS"]);
+      if (valNombre || valDepto || valObjeto || valDesc || valSerie) {
+        const idGenerado = GenerarIDPorDepartamento(valDepto);
+        AgregarFilaATabla(dtInventario, fechaCarga, idGenerado, valNombre, valPuesto, valDepto, valSucursal, valObjeto, valMarca, valSerie, valDesc, valEstado);
+        registrosAgregados++;
+      }
+    }
+    enlazarGrilla();
+    alert("Se importaron exitosamente " + registrosAgregados + " registros de Excel.");
+  } catch (ex) { alert("Error al leer Excel: " + ex.message); }
+}
+function ObtenerValorColumnaEspecial(fila, palabrasClave){
+  for (const kw of palabrasClave) for (const k of fila.keys()) if (k.trim().toUpperCase() === kw.trim().toUpperCase()) return fila.get(k).trim();
+  for (const kw of palabrasClave) for (const k of fila.keys()) if (k.trim().toUpperCase().startsWith(kw.trim().toUpperCase())) return fila.get(k).trim();
+  return "";
+}
+function AgregarFilaATabla(dt, fecha, consecutivoID, nombre, puesto, depto, sucursal, objeto, marca, serie, desc, estado){
+  const q = s => s.replace(/"/g, "").trim();
+  let serieLimpia = q(serie);
+  if (!serieLimpia || serieLimpia.toUpperCase() === "S/N" || serieLimpia.toUpperCase() === "SIN SERIE") serieLimpia = "GEN-" + consecutivoID;
+  dt.push({"Fecha Carga": fecha, "Numero Consecutivo": consecutivoID, "Nombre": q(nombre), "Puesto": q(puesto), "Departamento": q(depto),
+    "Sucursal": q(sucursal), "Objeto": q(objeto), "Marca/Modelo": q(marca), "No. Serie": serieLimpia, "Descripcion": q(desc), "Estado": q(estado)});
+}
+
+/* ---------- Impresión de etiquetas ---------- */
+function ObtenerFilasSeleccionadas(){
+  filasParaImprimir = [];
+  document.querySelectorAll("#dgvDatos tbody tr").forEach(tr => { if (tr.querySelector("input[type=checkbox]").checked) filasParaImprimir.push(tr._row); });
+  // Respaldo por SelectedRows: en modo CellSelect del original nunca hay filas seleccionadas.
+}
+function GenerarImagenQR(contenido){
+  return new Promise(r => { const i = new Image(); i.onload = () => r(i); i.onerror = () => r(null);
+    i.src = "https://api.qrserver.com/v1/create-qr-code/?size=150x150&margin=0&data=" + EscapeDataString(contenido); });
+}
+const _cv = document.createElement("canvas").getContext("2d");
+function ObtenerFuenteAjustada(texto, tamBase, anchoMaximo, tamMinimo){
+  let t = tamBase;
+  while (t > tamMinimo) {
+    _cv.font = (t * 96 / 72) + 'px "Segoe UI",Roboto,Arial,sans-serif';
+    if (_cv.measureText(texto).width * 100 / 96 <= anchoMaximo) return t;
+    t -= 0.2;
+  }
+  return t;
+}
+const U = n => `calc(var(--u)*${n})`;
+function celda(par, x, y, w, h, txt, css, cls){
+  const d = document.createElement("div"); d.className = "a " + (cls || "");
+  d.style.cssText = `left:${U(x)};top:${U(y)};` + (w != null ? `width:${U(w)};` : "") + (h != null ? `height:${U(h)};` : "") + css;
+  if (txt != null) d.textContent = txt; par.appendChild(d); return d;
+}
+async function docPDF_PrintPage(filaData){ // un sticker por fila (250x135, 2 columnas)
+  const consecutivo = filaData["Numero Consecutivo"], nombre = filaData["Nombre"], marcaModelo = filaData["Marca/Modelo"], depto = filaData["Departamento"], objeto = filaData["Objeto"];
+  let noSerie = filaData["No. Serie"];
+  if (!noSerie || noSerie.toUpperCase() === "S/N") noSerie = "GEN-" + consecutivo;
+  const s = document.createElement("div"); s.className = "sticker";
+  celda(s, 0, 0, 250, 24, null, "background:#141e2d");
+  celda(s, 6, 4, null, null, "MOTO GALERÍA", "color:#fff;font:700 8.8pt var(--f)");
+  celda(s, 0, 4, 244, 18, "ID: " + consecutivo, "color:#ff0;font:700 8.8pt var(--f);text-align:right");
+  const qrX = 250 - 62 - 6, qrY = 28;
+  celda(s, qrX - 1, qrY - 1, 64, 64, null, `border:${U(1)} solid #d3d3d3`);
+  let textoEquipo = objeto.trim(); if (!textoEquipo) textoEquipo = "EQUIPO GENERAL";
+  const urlQR = urlBaseGeolocalizacion + consecutivo + "&resp=" + EscapeDataString(nombre) + "&obj=" + EscapeDataString(textoEquipo);
+  const imgQR = await GenerarImagenQR(urlQR);
+  if (imgQR) { imgQR.style.cssText = `position:absolute;left:${U(qrX)};top:${U(qrY)};width:${U(62)};height:${U(62)}`; s.appendChild(imgQR); }
+  const xValor = 48, ancho = (qrX - 8) - xValor;
+  [["EQUIPO:", textoEquipo, 4.0], ["N/S:", noSerie, 4.5], ["RESP:", nombre, 4.2], ["MARCA:", marcaModelo, 4.2], ["DEPTO:", depto, 4.2]].forEach(([lbl, val, min], i) => {
+    const y = 28 + i * 15;
+    celda(s, 6, y, null, null, lbl, "color:#1e28a0;font:700 6.2pt var(--f)");
+    celda(s, xValor, y, ancho, 14, val, `color:#000;font:${ObtenerFuenteAjustada(val, 6.2, ancho, min)}pt var(--f)`, "w");
+  });
+  celda(s, 6, 107, 238, 0, null, "border-top:" + U(1) + " solid #d3d3d3");
+  celda(s, 0, 110, 250, 18, "ESCANEE QR PARA VERIFICAR ACTIVO", "color:#145032;font:700 5.8pt var(--f);text-align:center");
+  return s;
+}
+$("btnImprimirEtiqueta").onclick = async () => {
+  ObtenerFilasSeleccionadas();
+  if (filasParaImprimir.length === 0) { alert("Marca la casilla o selecciona los elementos a imprimir."); return; }
+  indiceImpresionActual = 0;
+  const pa = $("printArea"); pa.textContent = "";
+  (await Promise.all(filasParaImprimir.map(docPDF_PrintPage))).forEach(s => pa.appendChild(s));
+  window.print();
+};
+
+/* ---------- Form1_Load ---------- */
+dtInventario = CargarDatosLocales();
+ReconstruirContadores();
+enlazarGrilla();
+ActualizarContador();
+</script>
+</body>
+</html>
