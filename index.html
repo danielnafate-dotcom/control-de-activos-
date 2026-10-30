@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Gestor de Inventario y Etiquetado QR</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<style>
+:root{--u:.01in;--f:"Segoe UI",Roboto,Arial,sans-serif;--ink:#1e293b;--bg:#f1f5f9;--dark:#0f172a;--line:#e2e8f0;--ac:#4f46e5}
+*{box-sizing:border-box}html,body{height:100%;margin:0}
+body{font:10pt var(--f);color:var(--ink);background:var(--bg);display:flex;flex-direction:column}
+header{background:var(--ink);padding:12px 20px;display:flex;gap:14px;align-items:center;flex-wrap:wrap}
+h1{color:#fff;font-size:13pt;margin:0;flex:1;min-width:260px}
+header input,header select{height:36px;border:0;border-radius:8px;padding:0 12px;font:10pt var(--f)}
+#q{width:300px}
+#stats{display:flex;gap:12px;padding:14px 20px 0;flex-wrap:wrap}
+.card{background:#fff;border:1px solid var(--line);border-radius:10px;padding:10px 16px;min-width:130px}
+.card b{display:block;font-size:18pt}.card span{font-size:8.5pt;color:#64748b}
+.card.warn b{color:#e11d48}
+#bars{flex:1;min-width:280px;background:#fff;border:1px solid var(--line);border-radius:10px;padding:8px 14px;font-size:8.5pt}
+.bar{display:flex;align-items:center;gap:8px;margin:2px 0}.bar i{display:block;height:7px;background:var(--ac);border-radius:4px}.bar em{width:120px;font-style:normal;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#tools{padding:12px 20px;display:flex;gap:8px;flex-wrap:wrap}
+button{font:600 9pt var(--f);height:34px;padding:0 14px;border:0;border-radius:8px;color:#fff;background:var(--ac);cursor:pointer}
+button:hover{filter:brightness(1.12)}button.g{background:#10b981}button.o{background:#f59e0b}button.r{background:#e11d48}button.s{background:#475569}
+#grid{flex:1;overflow:auto;margin:0 20px;background:#fff;border:1px solid var(--line);border-radius:10px}
+table{width:100%;border-collapse:collapse;min-width:1200px;font-size:9pt}
+th{position:sticky;top:0;background:var(--dark);color:#fff;text-align:left;padding:0 8px;height:38px;cursor:pointer;white-space:nowrap;user-select:none}
+td{padding:0 8px;height:34px;border-bottom:1px solid var(--line);max-width:200px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+tr:nth-child(even) td{background:#f8fafc}tr.chk td{background:#e0e7ff}
+td.id{font-weight:700;background:#f1f5f9!important}td.dup{color:#e11d48;font-weight:700}
+td input{width:100%;height:30px;border:2px solid var(--ac);padding:0 4px;font:inherit}
+#st{padding:8px 20px;font-size:8.5pt;color:#475569}
+dialog{border:0;border-radius:12px;padding:20px;width:min(560px,94vw);box-shadow:0 10px 40px #0005}
+dialog label{display:block;font-size:8.5pt;color:#475569;margin-top:8px}
+dialog input{width:100%;height:34px;border:1px solid #cbd5e1;border-radius:6px;padding:0 8px;font:10pt var(--f)}
+dialog .row{display:grid;grid-template-columns:1fr 1fr;gap:0 12px}
+#toast{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);background:var(--ink);color:#fff;padding:10px 18px;border-radius:8px;display:none;z-index:9;max-width:90vw}
+#printArea{display:none}
+.sticker{position:relative;width:calc(var(--u)*250);height:calc(var(--u)*135);background:#fff;box-shadow:inset 0 0 0 calc(var(--u)*1.5) #141e2d;overflow:hidden;break-inside:avoid;font-family:var(--f)}
+.sticker .a{position:absolute;white-space:nowrap;line-height:1.25}.sticker .w{white-space:normal;overflow:hidden}
+@page{size:letter;margin:1in}
+@media print{body>:not(#printArea){display:none!important}body{display:block;background:#fff;height:auto}
+#printArea{display:grid;grid-template-columns:repeat(2,calc(var(--u)*250));gap:calc(var(--u)*15);-webkit-print-color-adjust:exact;print-color-adjust:exact}}
+</style></head><body>
+<header><h1>📦 Inventario con etiquetado QR geolocalizable</h1>
+<select id="dep"></select><input id="q" placeholder="🔍 Buscar en todos los campos..."></header>
+<div id="stats"></div>
+<div id="tools">
+<button class="s" id="bNew">➕ Nuevo registro</button>
+<button class="g" id="bImp">📁 Importar Excel / CSV</button>
+<button class="o" id="bPrint">🏷️ Imprimir QR</button>
+<button class="r" id="bDel" style="display:none">🗑 Eliminar marcados</button>
+<button class="s" id="bCfg" style="margin-left:auto">⚙ Más opciones</button>
+<input type="file" id="f1" accept=".xlsx,.csv" hidden><input type="file" id="f2" accept=".json" hidden></div>
+<div id="grid"><table id="t"></table></div><div id="st"></div>
+<dialog id="dlg"><form method="dialog" id="frm"><h3 id="dT" style="margin:0"></h3><div class="row" id="flds"></div>
+<div style="margin-top:16px;display:flex;gap:8px;justify-content:flex-end"><button class="s" value="x" formnovalidate>Cancelar</button><button id="dOk" value="ok">Guardar</button></div></form></dialog>
+<dialog id="dc"><h3 style="margin:0 0 6px">Más opciones</h3><label>Nombre de la empresa en la etiqueta</label><input id="cE"><label>URL base del QR</label><input id="cU">
+<div style="margin-top:14px;display:flex;gap:8px;flex-wrap:wrap"><button class="s" id="bCsv">⬇ Exportar CSV</button><button class="s" id="bBak">💾 Respaldo</button><button class="s" id="bRes">♻ Restaurar respaldo</button><button class="r" id="bClr">Limpiar histórico</button></div>
+<div style="margin-top:16px;text-align:right"><button class="s" id="cNo">Cerrar</button> <button id="cOk">Guardar configuración</button></div></dialog>
+<div id="toast"></div><div id="printArea"></div>
+<script>
+"use strict";
+const $=i=>document.getElementById(i),KEY="datos_inventario",KC="inventario_config";
+const COLS=["Fecha Carga","Numero Consecutivo","Nombre","Puesto","Area","Departamento","Sucursal","Objeto","Marca/Modelo","No. Serie","Descripcion","Estado"];
+const SHOW=["Numero Consecutivo","Nombre","Puesto","Area","Departamento","Sucursal","Objeto","Marca/Modelo","No. Serie","Descripcion","Estado","Fecha Carga"];
+const LOCK=["Numero Consecutivo","Fecha Carga"],EDIT=["Nombre","Puesto","Area","Departamento","Sucursal","Objeto","Marca/Modelo","No. Serie","Descripcion","Estado"];
+let D=[],sel=new Set(),q="",dep="",sc=null,asc=true;const cnt=new Map();
+let cfg={empresa:"MOTO GALERÍA",url:"https://danielnafate-dotcom.github.io/rensponsivas/?id="};
+const SINSERIE=/^(S\/N|N\/A|NA|N\.A\.|NO APLICA|NO TIENE|SIN SERIE|SIN NUMERO|SIN NÚMERO|-+|\.+|0+)$/i;const ESC=s=>encodeURIComponent(s).replace(/[!'()*]/g,c=>"%"+c.charCodeAt(0).toString(16).toUpperCase());
+function toast(m){const t=$("toast");t.textContent=m;t.style.display="block";clearTimeout(toast.h);toast.h=setTimeout(()=>t.style.display="none",4000)}
+function save(){try{localStorage.setItem(KEY,JSON.stringify(D))}catch(e){toast("Error al guardar: "+e.message)}}
+function norm(r){const o={};COLS.forEach(c=>o[c]=r&&r[c]!=null?String(r[c]):"");return o}
+function load(){try{D=JSON.parse(localStorage.getItem(KEY)||"[]").map(norm)}catch(e){D=[]}
+try{Object.assign(cfg,JSON.parse(localStorage.getItem(KC)||"{}"))}catch(e){}}
+/* ---- Puesto -> Departamento (aprendido de la lista de empleados; sin nombres de personas) ---- */
+const MAPA={"AUXILIAR DE CREDITO Y COBRANZA":"ADMINISTRACIÓN","JEFE DE ATENCION A CLIENTES":"ATENCION A CLIENTES","ENCARGADO VENTAS":"COMERCIAL","GESTOR VEHICULAR":"TRANSPORTE","BUSINESS INTELLIGENCE MANAGER":"DIRECCION GENERAL","SUBDIRECTOR COMERCIAL DE REFACCIONES":"VENTA DE REFACCIONES","VENDEDOR DE REFACCIONES":"VENTA DE REFACCIONES","ANALISTA DE COMPRAS":"LOGISTICA","AUXILIAR DE ETIQUETADO":"LOGISTICA","MECANICO":"ARMADOS Y SEMINUEVAS","ATENCION A CLIENTES":"ATENCION A CLIENTES","SUPERVISOR INVENTARIO DE REFACCIONES":"ALMACENES","AUXILIAR DE ALMACEN":"ALMACENES","ASISTENTE CHOFER DE DIRECCION":"DIRECCION GENERAL","GERENTE DE CAPACITACION Y GARANTIAS":"CAPACITACION Y GARANTIAS","AUXILIAR DE SOPORTE TECNICO":"TECNOLOGÍAS DE INFORMACIÓN","EJECUTIVO DE RECLUTAMIENTO":"RECURSOS HUMANOS","MEJORA CONTINUA":"ADMINISTRACIÓN","DIRECTOR DE POST VENTA":"POST VENTA","SUBDIRECTOR COMERCIAL DE SUCURSALES":"COMERCIAL","ADMINISTRATIVO DE REFACCIONES":"ADMINISTRACIÓN","ENCARGADO VENTAS MCA":"DISTRIBUIDORES ZONA SUR","AUXILIAR DE DESARROLLO DE SISTEMAS":"TECNOLOGÍAS DE INFORMACIÓN","AUXILIAR DE SEGURIDAD E HIGIENE":"RECURSOS HUMANOS","COORDINADOR DE LOGISTICA INTERNACIONAL":"LOGISTICA","SUPERVISOR DE SEMINUEVAS":"ARMADOS Y SEMINUEVAS","NOMINAS":"RECURSOS HUMANOS","AUXILIAR CONTABLE":"ADMINISTRACIÓN","ENCARGADO DE ALMACEN DE REFACCIONES":"ALMACENES","MONITORISTA":"TRANSPORTE","AUXILIAR DE AUDITORIA":"AUDITORIA","GERENTE DE SUCURSAL":"DISTRIBUIDORES ZONA SUR","ANALISTA DE CREDITO Y COBRANZA":"ADMINISTRACIÓN","APERTURADOR DE ZONA":"COMERCIAL","SUBGERENTE COMERCIAL":"MARKETING DIGITAL","AUXILIAR DE RIESGOS":"RIESGOS","DIRECTOR COMERCIAL":"COMERCIAL","ENCARGADO DE ALMACEN MCA":"ALMACENES","GERENTE DE ALMACENES":"ALMACENES","ENCARGADO DE SEMINUEVAS":"ARMADOS Y SEMINUEVAS","CONTADOR SENIOR":"CONTABILIDAD","GERENTE DE CONTABILIDAD":"CONTABILIDAD","ANALISTA DE INFORMACION Y PROCESOS":"ALMACENES","MECANICO MAESTRO":"CAPACITACION Y GARANTIAS","AUDITOR SENIOR":"AUDITORIA","GERENTE DE ADMINISTRACION":"ADMINISTRACIÓN","AUXILIAR DE CUMPLIMIENTO DE PLD":"CUMPLIMIENTO","AUXILIAR ADMINISTRATIVO DE REFACCIONES":"ADMINISTRACIÓN","GERENTE DE COMPRAS":"LOGISTICA","VENDEDOR A DISTRIBUIDORES":"DISTRIBUIDORES ZONA SUR","AUXILIAR DE FACTURACION":"ADMINISTRACIÓN","CONTADOR JUNIOR":"CONTABILIDAD","ENCARGADA DE FACTURACION":"ADMINISTRACIÓN","AUXILIAR DE SEMINUEVAS":"ARMADOS Y SEMINUEVAS","GERENTE DE LOGISTICA":"LOGISTICA","COORDINADOR DE LOGISTICA NACIONAL":"LOGISTICA","DIRECTOR DE ALMACENES":"ALMACENES","ANALISTA ADMINISTRATIVO":"ADMINISTRACIÓN","SUB DIRECTOR COMERCIAL MARKETING DIGITAL":"MARKETING DIGITAL","GERENTE DE RECURSOS HUMANOS":"RECURSOS HUMANOS","ANALISTA CONTABLE":"CONTABILIDAD","AUXILIAR DE GARANTIAS":"CAPACITACION Y GARANTIAS","ENCARGADO DE TALLER":"ARMADOS Y SEMINUEVAS","INVERSIONES FONDEO Y FILIALES":"FONDEO E INVERSIONES","SUPERVISOR DE VEHICULOS":"ALMACENES","FORMACION Y DESARROLLO":"RECURSOS HUMANOS","SUPERVISOR DE ADMINISTRACION Y GARANTIAS":"CAPACITACION Y GARANTIAS","DIRECTOR DE LOGISTICA":"LOGISTICA","DIRECTORA DE ADMINISTRACION":"ADMINISTRACIÓN","AUXILIAR DE LOGISTICA":"LOGISTICA","CHOFER VENDEDOR DE REFACCIONES":"VENTA DE REFACCIONES","SUPERVSISOR DE POSTVENTA":"SUPERVISION","DISENADOR GRAFICO":"DISEÑO","COMMUNITY MANAGER":"DISEÑO","SUPERVISOR DE POST VENTA":"SUPERVISION","OPERADOR DE ENTREGA DE UNIDADES":"TRANSPORTE","TESORERIA":"TESORERIA","GERENTE DE DISENO GRAFICO":"DISEÑO","NUEVOS PROYECTOS":"DIRECCION GENERAL","SUBDIRECTOR COMERCIAL":"COMERCIAL"};
+const RULES=[[/RECLUT|RECURSOS HUMANOS|NOMINA|CAPITAL HUMANO|SEGURIDAD E HIGIENE|FORMACION Y DESARROLLO/,"RECURSOS HUMANOS"],[/CONTAD|CONTABLE|CONTABILIDAD/,"CONTABILIDAD"],[/AUDITOR/,"AUDITORIA"],[/RIESGO/,"RIESGOS"],[/CUMPLIMIENTO|PLD/,"CUMPLIMIENTO"],[/TESORER/,"TESORERIA"],
+[/SOPORTE|SISTEMAS|PROGRAMADOR|DESARROLLADOR|\bTI\b/,"TECNOLOGÍAS DE INFORMACIÓN"],[/DISENO|COMMUNITY/,"DISEÑO"],[/MECANICO MAESTRO|GARANTIA/,"CAPACITACION Y GARANTIAS"],[/MECANICO|TALLER|SEMINUEV/,"ARMADOS Y SEMINUEVAS"],
+[/ALMACEN|INVENTARIO/,"ALMACENES"],[/LOGISTICA|COMPRAS|ETIQUETADO/,"LOGISTICA"],[/ATENCION A CLIENTES/,"ATENCION A CLIENTES"],[/FACTURACION|CREDITO|COBRANZA/,"ADMINISTRACIÓN"],[/REFACCION/,"VENTA DE REFACCIONES"],
+[/CHOFER|OPERADOR DE ENTREGA|GESTOR VEHICULAR|MONITORISTA|TRANSPORTE/,"TRANSPORTE"],[/VENDEDOR|VENTAS/,"COMERCIAL"]];
+const GENERICO=new Set(["ADMINISTRACION","COMERCIAL","ALMACENES","DIRECCION GENERAL","POSTVENTA","LOGISTICA"]);
+const sa=s=>(s||"").normalize("NFD").replace(/[\u0300-\u036f]/g,"").toUpperCase().replace(/\s+/g," ").trim();
+function deptoDe(p){const k=sa(p);if(!k)return"";if(MAPA[k])return MAPA[k];for(const[r,d]of RULES)if(r.test(k))return d;return""}
+const AREAS={"MARKETING DIGITAL":"COMERCIAL","ADMINISTRACION":"ADMINISTRACION","ALMACENES":"ALMACENES","ATENCION A CLIENTES":"POSTVENTA","COMERCIAL":"COMERCIAL","TRANSPORTE":"COMERCIAL","DIRECCION GENERAL":"DIRECCION GENERAL","VENTA DE REFACCIONES":"COMERCIAL","LOGISTICA":"LOGISTICA","ARMADOS Y SEMINUEVAS":"COMERCIAL","CAPACITACION Y GARANTIAS":"POSTVENTA","TECNOLOGIAS DE INFORMACION":"ADMINISTRACION","RECURSOS HUMANOS":"ADMINISTRACION","POST VENTA":"POSTVENTA","DISTRIBUIDORES ZONA SUR":"COMERCIAL","AUDITORIA":"DIRECCION GENERAL","RIESGOS":"DIRECCION GENERAL","CONTABILIDAD":"ADMINISTRACION","CUMPLIMIENTO":"DIRECCION GENERAL","FONDEO E INVERSIONES":"ADMINISTRACION","SUPERVISION":"POSTVENTA","DISENO":"COMERCIAL","DIRECCION":"DIRECCION GENERAL","TESORERIA":"DIRECCION GENERAL"};
+function areaDe(d){const k=sa(d);return AREAS[k]||(GENERICO.has(k)?k:"")}
+function completar(o){const d=deptoDe(o.Puesto),dv=(o.Departamento||"").trim();
+if(!(o.Area||"").trim()&&dv&&GENERICO.has(sa(dv)))o.Area=sa(dv);
+if(d&&(!dv||GENERICO.has(sa(dv))))o.Departamento=d;
+if(!(o.Area||"").trim())o.Area=areaDe(o.Departamento)}
+/* ---- IDs por departamento (misma lógica del VB) ---- */
+function prefijo(x,soloReglas){if(!x||!x.trim())return"GEN";const d=x.trim().toUpperCase().replace(/Á/g,"A").replace(/É/g,"E").replace(/Í/g,"I").replace(/Ó/g,"O").replace(/Ú/g,"U");
+const h=(...k)=>k.some(v=>d.includes(v));
+if(h("REFACCION"))return"VEN-REF";if(h("MOTOCICLETA","MOTO"))return"VEN-MOT";if(h("PROSPECCION"))return"VEN-PR";if(h("MARKETING"))return"MKT";
+if(h("ALMACEN CDMX","ALM CDMX"))return"ALM-CDM";if(h("ALMACEN TERAN","ALM TERAN"))return"ALM-TER";if(h("ALMACEN","ALM"))return"ALM";
+if(h("ATENCION","CLIENTE"))return"ATE";if(h("DIRECCION","DIR GENERAL"))return"DIRG";if(h("COMERCIAL"))return"COM";if(h("ADMINISTRA","ADMON"))return"ADMO";
+if(h("TRANSPORTE","CHOFER"))return"TRA";if(h("SUPERVISI"))return"SUP";if(h("SISTEMA","TECNOLOGIA")||/\bIT\b/.test(d))return"SIS";
+if(soloReglas)return"";
+const w=(d.match(/[A-Z0-9]+/g)||[]).filter(p=>!["DE","DEL","A","LA","EL","LOS","LAS","Y","EN","PARA","POR"].includes(p));
+if(w.length>=2)return w[0].substring(0,3)+"-"+w[1].substring(0,3);if(w.length==1)return w[0].substring(0,4);return"GEN"}
+function nuevoID(dp,area){const p=prefijo(dp,1)||prefijo(area,1)||prefijo(dp),k=p.toUpperCase();cnt.set(k,(cnt.get(k)||0)+1);return p+"-"+String(cnt.get(k)).padStart(3,"0")}
+function rebuild(){cnt.clear();D.forEach(r=>{const p=r["Numero Consecutivo"].split("-");if(p.length<2)return;const n=parseInt(p[p.length-1],10);
+if(isNaN(n))return;const k=p.slice(0,-1).join("-").toUpperCase();if(!cnt.has(k)||cnt.get(k)<n)cnt.set(k,n)})}
+function addRow(o){completar(o);const q=s=>(s||"").replace(/"/g,"").trim(),id=nuevoID(o.Departamento,o.Area);let s=q(o["No. Serie"]);
+if(!s||SINSERIE.test(s))s="GEN-"+id;
+const r={"Fecha Carga":o["Fecha Carga"]||fecha(),"Numero Consecutivo":id};EDIT.forEach(c=>r[c]=q(o[c]));r["No. Serie"]=s;D.push(r);return r}
+const p2=n=>String(n).padStart(2,"0");
+function fecha(){const d=new Date();return`${p2(d.getDate())}/${p2(d.getMonth()+1)}/${d.getFullYear()} ${p2(d.getHours())}:${p2(d.getMinutes())}:${p2(d.getSeconds())}`}
+/* ---- Vista ---- */
+function dups(){const m=new Map();D.forEach(r=>{const s=r["No. Serie"].toUpperCase();if(s&&!s.startsWith("GEN-")&&!SINSERIE.test(s))m.set(s,(m.get(s)||0)+1)});return new Set([...m].filter(x=>x[1]>1).map(x=>x[0]))}
+function view(){let v=D;if(dep)v=v.filter(r=>r.Area===dep);
+if(q){const s=q.toLowerCase();v=v.filter(r=>COLS.some(c=>r[c].toLowerCase().includes(s)))}
+if(sc)v=v.slice().sort((a,b)=>a[sc].localeCompare(b[sc],"es",{numeric:true})*(asc?1:-1));return v}
+function render(){const v=view(),dp=dups(),T=$("t");
+const ds=[...new Set(D.map(r=>r.Departamento).filter(Boolean))].sort();
+const ar=[...new Set(D.map(r=>r.Area).filter(Boolean))].sort();$("dep").innerHTML="";$("dep").add(new Option("Todas las áreas",""));ar.forEach(d=>$("dep").add(new Option(d,d)));$("dep").value=ar.includes(dep)?dep:"";
+const by={};D.forEach(r=>by[r.Area||r.Departamento||"(sin área)"]=(by[r.Area||r.Departamento||"(sin área)"]||0)+1);
+const top=Object.entries(by).sort((a,b)=>b[1]-a[1]).slice(0,5),mx=top.length?top[0][1]:1;
+const suc=new Set(D.map(r=>r.Sucursal).filter(Boolean)).size,sinS=D.filter(r=>r["No. Serie"].startsWith("GEN-")).length;
+$("stats").innerHTML=`<div class="card"><b>${D.length}</b><span>Activos registrados</span></div><div class="card"><b>${ds.length}</b><span>Departamentos</span></div>
+<div class="card"><b>${suc}</b><span>Sucursales</span></div><div class="card"><b>${sinS}</b><span>Sin número de serie</span></div>
+<div class="card ${dp.size?"warn":""}"><b>${dp.size}</b><span>Series duplicadas</span></div>
+<div id="bars">${top.map(([n,c])=>`<div class="bar"><em></em><i style="width:${c/mx*60}%"></i>${c}</div>`).join("")||"Sin datos todavía"}</div>`;
+[...document.querySelectorAll("#bars em")].forEach((e,i)=>e.textContent=top[i][0]);
+T.textContent="";const hr=T.appendChild(document.createElement("thead")).appendChild(document.createElement("tr"));
+const th0=hr.appendChild(document.createElement("th")),ca=th0.appendChild(document.createElement("input"));ca.type="checkbox";ca.title="Marcar / desmarcar los visibles";th0.style.cursor="default";ca.checked=v.length>0&&v.every(r=>sel.has(r["Numero Consecutivo"]));ca.onchange=()=>{v.forEach(r=>ca.checked?sel.add(r["Numero Consecutivo"]):sel.delete(r["Numero Consecutivo"]));render()};
+SHOW.forEach(c=>{const th=hr.appendChild(document.createElement("th"));th.textContent=(c=="Numero Consecutivo"?"ID":c=="Area"?"Área":c)+(sc==c?(asc?" ▲":" ▼"):"");th.onclick=()=>{if(sc==c)asc=!asc;else{sc=c;asc=true}render()}});
+hr.appendChild(document.createElement("th")).textContent="";
+const tb=T.appendChild(document.createElement("tbody"));
+v.forEach(r=>{const id=r["Numero Consecutivo"],tr=tb.appendChild(document.createElement("tr"));if(sel.has(id))tr.className="chk";
+const c0=tr.appendChild(document.createElement("td")),ck=c0.appendChild(document.createElement("input"));ck.type="checkbox";ck.checked=sel.has(id);
+ck.onchange=()=>{ck.checked?sel.add(id):sel.delete(id);tr.className=ck.checked?"chk":"";info()};
+SHOW.forEach(c=>{const td=tr.appendChild(document.createElement("td"));td.textContent=r[c];td.title=r[c];
+if(c=="Numero Consecutivo")td.className="id";if(c=="No. Serie"&&dp.has(r[c].toUpperCase()))td.className="dup",td.title="Serie duplicada";
+if(!LOCK.includes(c))td.ondblclick=()=>edit(td,r,c)});
+const b=tr.appendChild(document.createElement("td")).appendChild(document.createElement("button"));b.textContent="✎";b.style.cssText="height:26px;padding:0 8px";b.className="s";b.onclick=()=>form(r)});
+info(v.length)}
+function info(n){if(n==null)n=view().length;$("bDel").style.display=sel.size?"":"none";$("bPrint").textContent="🏷️ Imprimir QR"+(sel.size?` (${sel.size})`:"");$("st").textContent=`Registros visibles: ${n} | Total en base de datos: ${D.length} | Marcados para imprimir: ${sel.size}`}
+function edit(td,r,c){const i=document.createElement("input");i.value=r[c];td.textContent="";td.appendChild(i);i.focus();i.select();let ok=0;
+const fin=s=>{if(ok)return;ok=1;if(s){r[c]=i.value.trim();if(c=="Puesto"&&!r.Departamento)r.Departamento=deptoDe(r.Puesto);if((c=="Puesto"||c=="Departamento")&&!r.Area)r.Area=areaDe(r.Departamento);save()}render()};i.onblur=()=>fin(1);i.onkeydown=e=>{if(e.key=="Enter")fin(1);if(e.key=="Escape")fin(0)}}
+/* ---- Formulario nuevo / editar ---- */
+let cur=null;
+function form(r){cur=r;$("dT").textContent=r?"Editar "+r["Numero Consecutivo"]:"Nuevo registro";
+$("flds").innerHTML=EDIT.map(c=>`<div><label>${c}</label><input name="${c}" list="${c=="Departamento"||c=="Sucursal"?"dl"+c:""}" value=""></div>`).join("")+
+`<datalist id="dlDepartamento">${[...new Set(D.map(x=>x.Departamento))].map(x=>`<option value="${x.replace(/"/g,"&quot;")}">`).join("")}</datalist><datalist id="dlSucursal">${[...new Set(D.map(x=>x.Sucursal))].map(x=>`<option value="${x.replace(/"/g,"&quot;")}">`).join("")}</datalist>`;
+EDIT.forEach(c=>$("flds").querySelector(`[name="${c}"]`).value=r?r[c]:"");const P=$("flds").querySelector('[name="Puesto"]');const X=$("flds").querySelector('[name="Departamento"]'),A=$("flds").querySelector('[name="Area"]'),fa=()=>{if(!A.value.trim()){const a=areaDe(X.value);if(a)A.value=a}};P.onchange=()=>{const d=deptoDe(P.value);if(d&&!X.value.trim())X.value=d;fa()};X.onchange=fa;$("dlg").showModal()}
+$("frm").onsubmit=e=>{if(e.submitter.value!="ok")return;const o={};EDIT.forEach(c=>o[c]=$("flds").querySelector(`[name="${c}"]`).value.trim());
+if(!o.Nombre&&!o.Departamento&&!o.Objeto&&!o["No. Serie"]){toast("Captura al menos nombre, departamento, objeto o serie.");e.preventDefault();return}
+completar(o);if(cur)EDIT.forEach(c=>cur[c]=o[c]);else addRow(o);save();render();toast(cur?"Registro actualizado.":"Registro agregado.")};
+$("bNew").onclick=()=>form(null);
+/* ---- Importación ---- */
+const KW={Nombre:["NOMBRE","EMPLEADO","RESPONSABLE","USUARIO"],Puesto:["PUESTO","CARGO"],Area:["AREA","ÁREA"],Departamento:["DEPARTAMENTO","DEPTO","AREA","ÁREA"],Sucursal:["SUCURSAL","UBICACION","UBICACIÓN","SITIO"],
+Objeto:["OBJETO"],"Marca/Modelo":["MODELO O MARCA","MODELO","MARCA"],"No. Serie":["N.° DE SERIE","N° DE SERIE","SERIE","S/N"],Descripcion:["DESCRIPCION","DESCRIPCIÓN","DETALLE","PRODUCTO"],Estado:["ESTADO AL MOMENTO DE ENTREGA","ESTADO","ESTATUS"]};
+function pick(f,kws){const ks=Object.keys(f);for(const w of kws){const k=ks.find(k=>k.trim().toUpperCase()==w);if(k!=null)return String(f[k]).trim()}
+for(const w of kws){const k=ks.find(k=>k.trim().toUpperCase().startsWith(w));if(k!=null)return String(f[k]).trim()}return""}
+function mapear(f){const o={};for(const c in KW)o[c]=pick(f,KW[c]);return o}
+function parseCSV(t){const d=(t.split("\n")[0].match(/;/g)||[]).length>(t.split("\n")[0].match(/,/g)||[]).length?";":",",rows=[];let r=[],c="",q=0;
+for(let i=0;i<t.length;i++){const ch=t[i];if(q){if(ch=='"'){if(t[i+1]=='"'){c+='"';i++}else q=0}else c+=ch}
+else if(ch=='"')q=1;else if(ch==d){r.push(c);c=""}else if(ch=="\n"||ch=="\r"){if(ch=="\r"&&t[i+1]=="\n")i++;r.push(c);rows.push(r);r=[];c=""}else c+=ch}
+if(c||r.length){r.push(c);rows.push(r)}return rows.filter(r=>r.some(x=>x.trim()))}
+async function leerCSV(buf){let t;try{t=new TextDecoder("utf-8",{fatal:true}).decode(buf)}catch(e){t=new TextDecoder("windows-1252").decode(buf)}
+const rows=parseCSV(t.replace(/^\uFEFF/,""));if(rows.length<2)return[];const h=rows[0].map(x=>x.trim().toUpperCase());
+const conocido=Object.values(KW).flat().some(w=>h.some(x=>x==w||x.startsWith(w)));
+return rows.slice(1).map(r=>{if(conocido){const f={};h.forEach((k,i)=>f[k]=r[i]||"");return mapear(f)}
+return{Nombre:r[1]||"",Puesto:r[2]||"",Departamento:r[3]||"",Sucursal:r[4]||"",Objeto:r[5]||"","Marca/Modelo":r[6]||"","No. Serie":r[7]||"",Descripcion:r[8]||"",Estado:r[9]||""}})}
+async function leerXlsx(buf){const NS="http://schemas.openxmlformats.org/spreadsheetml/2006/main",z=await JSZip.loadAsync(buf),ns=Object.keys(z.files);
+const px=s=>{const d=new DOMParser().parseFromString(s,"application/xml");if(d.getElementsByTagName("parsererror")[0])throw new Error("XML inválido");return d};
+const ss=[],eS=ns.find(n=>n.toLowerCase()=="xl/sharedstrings.xml");
+if(eS)for(const si of px(await z.file(eS).async("string")).getElementsByTagNameNS(NS,"si")){let t="";for(const x of si.getElementsByTagNameNS(NS,"t"))t+=x.textContent;ss.push(t.trim())}
+const hojas=ns.filter(n=>/^xl\/worksheets\/sheet[^/]*\.xml$/i.test(n)).sort((a,b)=>a.localeCompare(b,"en",{numeric:true}));if(!hojas.length)throw new Error("No se encontró ninguna hoja válida dentro del archivo Excel.");const out=[];
+for(const eH of hojas){const sd=px(await z.file(eH).async("string")).getElementsByTagNameNS(NS,"sheetData")[0];let enc=null;
+for(const row of[...(sd?sd.children:[])].filter(n=>n.localName=="row")){const cel={};let ci=0;
+for(const c of[...row.children].filter(n=>n.localName=="c")){const col=(c.getAttribute("r")||"").replace(/[0-9]/g,"")||"#"+(ci++),t=c.getAttribute("t")||"",v=[...c.children].find(n=>n.localName=="v");let val="";
+if(v){const tx=v.textContent.trim();if(t=="s"){const i=parseInt(tx,10);if(i>=0&&i<ss.length)val=ss[i]}else val=tx}
+else if(t=="inlineStr"){const x=c.getElementsByTagNameNS(NS,"t")[0];if(x)val=x.textContent.trim()}
+cel[col]=val}
+if(!enc){enc={};for(const k in cel)if(cel[k].trim())enc[k]=cel[k].trim().toUpperCase();if(!Object.keys(enc).length)enc=null}
+else{const f={};for(const k in cel)if(enc[k])f[enc[k]]=cel[k];if(Object.keys(f).length)out.push(mapear(f))}}}
+return out}
+$("bImp").onclick=()=>$("f1").click();
+$("f1").onchange=async()=>{const f=$("f1").files[0];if(!f)return;try{const buf=await f.arrayBuffer(),ext=f.name.toLowerCase().split(".").pop();
+const filas=ext=="csv"?await leerCSV(buf):await leerXlsx(buf),fc=fecha();let n=0;
+for(const o of filas){if(!(o.Nombre||o.Departamento||o.Objeto||o.Descripcion||o["No. Serie"]))continue;
+o["Fecha Carga"]=fc;addRow(o);n++}
+save();render();toast(`Se importaron ${n} registros de ${filas.length} filas leídas`+(dups().size?`. Hay ${dups().size} series repetidas marcadas en rojo.`:"."))}catch(e){toast("Error al leer archivo: "+e.message)}$("f1").value=""};
+/* ---- Exportar, respaldo, limpieza ---- */
+function bajar(nombre,txt,tipo){const a=document.createElement("a");a.href=URL.createObjectURL(new Blob([txt],{type:tipo}));a.download=nombre;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),2000)}
+const hoy=()=>{const d=new Date();return`${d.getFullYear()}-${p2(d.getMonth()+1)}-${p2(d.getDate())}`};
+$("bCsv").onclick=()=>{const v=view();if(!v.length){toast("No hay registros para exportar.");return}
+bajar(`inventario_${hoy()}.csv`,"\uFEFF"+[COLS,...v.map(r=>COLS.map(c=>r[c]))].map(r=>r.map(x=>'"'+x.replace(/"/g,'""')+'"').join(",")).join("\r\n"),"text/csv")};
+$("bBak").onclick=()=>bajar(`respaldo_inventario_${hoy()}.json`,JSON.stringify({datos:D,config:cfg},null,1),"application/json");
+$("bRes").onclick=()=>$("f2").click();
+$("f2").onchange=async()=>{const f=$("f2").files[0];if(!f)return;try{const j=JSON.parse(await f.text()),d=(Array.isArray(j)?j:j.datos).map(norm);
+if(confirm(`Se reemplazarán los ${D.length} registros actuales por ${d.length} del respaldo. ¿Continuar?`)){D=d;if(j.config)Object.assign(cfg,j.config);sel.clear();rebuild();save();render();toast("Respaldo restaurado.")}}catch(e){toast("Respaldo inválido.")}$("f2").value=""};
+$("bDel").onclick=()=>{if(!sel.size){toast("Marca primero los registros a eliminar.");return}
+if(confirm(`¿Eliminar ${sel.size} registro(s) marcado(s)? Los IDs eliminados no se reutilizan.`)){D=D.filter(r=>!sel.has(r["Numero Consecutivo"]));sel.clear();save();render();toast("Registros eliminados.")}};
+$("bClr").onclick=()=>{if(!D.length){toast("El histórico ya se encuentra vacío.");return}
+if(confirm("¿Estás seguro de que deseas eliminar TODO el histórico de inventario? Se recomienda hacer un Respaldo antes.")){D=[];sel.clear();cnt.clear();localStorage.removeItem(KEY);render();toast("Histórico eliminado con éxito.")}};
+
+$("bCfg").onclick=()=>{$("cE").value=cfg.empresa;$("cU").value=cfg.url;$("dc").showModal()};
+$("cNo").onclick=()=>$("dc").close();["bCsv","bBak","bRes","bClr"].forEach(i=>$(i).addEventListener("click",()=>$("dc").close()));$("cOk").onclick=()=>{cfg.empresa=$("cE").value.trim()||cfg.empresa;cfg.url=$("cU").value.trim()||cfg.url;localStorage.setItem(KC,JSON.stringify(cfg));$("dc").close();toast("Configuración guardada.")};
+$("q").oninput=e=>{q=e.target.value.trim();render()};$("dep").onchange=e=>{dep=e.target.value;render()};
+/* ---- Etiquetas ---- */
+const cv=document.createElement("canvas").getContext("2d"),U=n=>`calc(var(--u)*${n})`;
+function ajustar(t,b,max,min){let s=b;while(s>min){cv.font=(s*96/72)+'px "Segoe UI",Roboto,Arial,sans-serif';if(cv.measureText(t).width*100/96<=max)return s;s-=.2}return s}
+function cel(p,x,y,w,h,t,css,cls){const d=document.createElement("div");d.className="a "+(cls||"");d.style.cssText=`left:${U(x)};top:${U(y)};`+(w!=null?`width:${U(w)};`:"")+(h!=null?`height:${U(h)};`:"")+css;if(t!=null)d.textContent=t;p.appendChild(d)}
+const qr=u=>new Promise(r=>{const i=new Image();i.onload=()=>r(i);i.onerror=()=>r(null);i.src="https://api.qrserver.com/v1/create-qr-code/?size=150x150&margin=0&data="+ESC(u)});
+async function sticker(r){const id=r["Numero Consecutivo"],nm=r.Nombre;let ns=r["No. Serie"];if(!ns||ns.toUpperCase()=="S/N")ns="GEN-"+id;
+const s=document.createElement("div");s.className="sticker";cel(s,0,0,250,24,null,"background:#141e2d");
+cel(s,6,4,null,null,cfg.empresa.toUpperCase(),"color:#fff;font:700 8.8pt var(--f)");cel(s,0,4,244,18,"ID: "+id,"color:#ff0;font:700 8.8pt var(--f);text-align:right");
+const X=182,Y=28;cel(s,X-1,Y-1,64,64,null,`border:${U(1)} solid #d3d3d3`);const eq=r.Objeto.trim()||"EQUIPO GENERAL";
+const im=await qr(cfg.url+id+"&resp="+ESC(nm)+"&obj="+ESC(eq));if(im){im.style.cssText=`position:absolute;left:${U(X)};top:${U(Y)};width:${U(62)};height:${U(62)}`;s.appendChild(im)}
+const a=(X-8)-48;[["EQUIPO:",eq,4],["N/S:",ns,4.5],["RESP:",nm,4.2],["MARCA:",r["Marca/Modelo"],4.2],["DEPTO:",r.Departamento,4.2]].forEach(([l,v,m],i)=>{const y=28+i*15;
+cel(s,6,y,null,null,l,"color:#1e28a0;font:700 6.2pt var(--f)");cel(s,48,y,a,14,v,`color:#000;font:${ajustar(v,6.2,a,m)}pt var(--f)`,"w")});
+cel(s,6,107,238,0,null,`border-top:${U(1)} solid #d3d3d3`);cel(s,0,110,250,18,"ESCANEE QR PARA VERIFICAR ACTIVO","color:#145032;font:700 5.8pt var(--f);text-align:center");return s}
+$("bPrint").onclick=async()=>{const f=D.filter(r=>sel.has(r["Numero Consecutivo"]));if(!f.length){toast("Marca la casilla de los elementos a imprimir.");return}
+toast(`Preparando ${f.length} etiqueta(s)...`);const pa=$("printArea");pa.textContent="";(await Promise.all(f.map(sticker))).forEach(s=>pa.appendChild(s));window.print()};
+document.title="Gestor de Inventario y Etiquetado QR";load();D.forEach(r=>{if(!r.Area)r.Area=areaDe(r.Departamento)});rebuild();render();
+</script></body></html>
